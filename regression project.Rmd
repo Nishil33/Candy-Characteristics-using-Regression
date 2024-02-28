@@ -1,0 +1,382 @@
+---
+title: "candy characteristics using regression"
+output:
+  html_document:
+    code_folding: hide
+    theme: journal
+    toc: yes
+    fig_caption: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,warning=FALSE)
+```
+
+# Question of interest
+
+The general goal is to find characteristics of popular candy brands and, subsequently, trying to come up with a business recommendation for a potential new candy. Here, I used a data resulting from an [online survey](http://walthickey.com/2017/10/18/whats-the-best-halloween-candy/) asking the following question: __*"Please select which fun-size Halloween treat you would most want to receive as a trick-or-treater."*__ 
+
+## history
+
+Afterwards, the participant is asked to choose between two candies (randomly sampled from a total of 83 candies). By Oct. 27th, 2017, 8,371 different IP addresses voted on about 269,000 randomly generated matchups (i.e., on average, each participant voted for ~30 candies). Considering the amount of participants and number of votes it seems reasonable to assume that all candies were sufficiently matched-up against each other. Thus, the data set gives a good impression what candies are favored and which not. The outcome of the study provided the win rate [in percent] for each individual candy. 
+
+# Data import an quality assessment of data set
+# data understanding
+
+```{r}
+
+# Loading required R libraries 
+library(tidyverse)
+library(skimr)
+library(Hmisc)
+library(psych)
+library(corrplot)
+library(rpart)
+library(rpart.plot)
+library(lattice)
+library(rmarkdown)
+library(gridExtra)
+
+# setting ggplot visualization theme
+theme_set(theme_classic()) 
+
+# file location
+url="C:/Users/AZAN LAPTOP STORE/Downloads/archive/candy-data.csv"
+
+# file import and class assignment of attributes
+candy_raw <- read_csv(url, col_types = c("clllllllllddd")) 
+
+# replacing odd characters
+candy_raw$competitorname <- candy_raw$competitorname %>% str_replace("Õ", "'")
+
+# renaming attributes 
+candy_renamed <- candy_raw %>% rename(candy = competitorname, 
+                                      peanut_almond = peanutyalmondy,
+                                      rice_wafer_cooky = crispedricewafer,
+                                      multipiece = pluribus)
+# data overview
+glimpse(candy_renamed)
+
+``` 
+
+The whole data set lists 85 different candy types along with 11 attributes and their win rate in percent ('winpercent') resulting from the online survey (data set is complete and has no missing values). Note that I chose for some of the attributes a more intuitive label (candy, peanut_almond, rice_wafer_cooky and multipiece were originally labeled differently). 
+
+Among the candy characteristics we find mainly binary attributes which can further be grouped to describe either a specific ingredient  ('chocolate', 'fruity', 'caramel', 'peanut_almond', 'nougat' and  'rice_wafer_cooky') or some physical feature ('hard', 'bar', 'multipiece'). Besides binary attributes, two numeric ones can be found ('sugarpercent' and 'pricepercent'; both represent the unit percentile compared to the rest of the set).
+
+With respect to the initial question, I decided to remove 'pricepercent' as the survey states: "... which (...) treat you would most want to **receive**". Consequently, it seems highly questionable whether price played any role whether participants chose one candy over another. In other words, if people had to actually buy a candy (out of two options) in a store, the win rate of each candy may have been different.
+
+The data set lists further 'one dime' and 'one quarter' as candies which is obviously incorrect. The coins were artificially added by the composer of the data set. As outlined in his corresponding article ([see link](https://fivethirtyeight.com/features/the-ultimate-halloween-candy-power-ranking/)), he wanted to show that any object could be used as input for a multiple regression model. For our purpose (finding favorable candy characteristics), both coins are certainly of no use.
+
+Based on the observations above, both coins and the attribute 'pricepercent' has been removed from data set. Afterwards, 83 candy brands and 10 characteristics (+ 'winpercent') remained.
+
+```{r}
+# removing dime and quarter
+candy_cleaned <- candy_renamed[-c(3:4), ] 
+# removing 'pricepercent price attribute did not play a role during the online survey
+candy_cleaned <- select(candy_cleaned, -pricepercent) 
+glimpse(candy_cleaned)
+```
+
+# Exploratory data analysis 
+## Binary candy characteristics
+
+The table below summarizes the binary characteristics. We see that particularly the frequency differs among all characteristics (ranging between 7 for 'nougat' and 'rice_wafer_cooky' and 39  for 'multipiece'). See also the 'logical.mean' column showing the proportion of TRUE´s for each category).
+
+```{r}
+skim_binary <- skim(candy_cleaned[2:10])
+skim_binary[c(-1,-3)]
+```
+
+For a first impression how each binary attributes relates to candy win rates, I created numerous histograms of the win rate facetted by attribute (Figure below). For reference, each subplot shows also the win rate histogram of the whole data. Not only shows this the proportion of each characteristic with respect to the entire data set but allows also a first visual impression whether specific attributes tend to have lower or higher win rates. As noted before, only a few candies contain 'nougat' and 'rice_wafer_cooky' whereas 'chocolate' and 'fruity' are more common ingredients. Hints for a good candy may already be derived from the histograms of 'chocolate' and 'peanut_almond' as they cover mainly areas of higher win rates. On the contrary, 'fruity' and 'hard' seem less indicative for a good candy.
+
+```{r, fig.align='center', fig.cap="Figure - Histograms of candy win rates (in %) for each binary characteristic. Overall shape of each histogram reflects the <br> entire data set whereby corresponding blue parts represent only the proportion of the individual characteristic."}
+
+candy_cleaned %>% gather(key = "characteristic", value = "value", chocolate:multipiece) %>%
+                  ggplot(aes(winpercent, fill = value)) + 
+                         geom_histogram(bins = 7) +
+                         labs(y = "Count", 
+                              x = "Win rate [%]", 
+                              title = "Histogram of candy win rates [%]",
+                              subtitle = "facetted by all binary characteristics") +
+                         facet_wrap(.~characteristic) +
+                         scale_fill_manual(values = c("grey", "#feb24c"))
+                         
+```
+
+## Numeric candy characteristics 
+
+The only remaining numeric candy characteristic 'sugarpercent' is visualized below. Here, we see that 'sugarpercent' is fairly evenly distributed along all 'winrates' (top left) and indicates a poor correlation with respect to 'winpercent' (r = 0.21; top right). Nonetheless, as suggested by the loess curve (bottom left), 'sugarpercent' may linearly influence 'winpercent' rather within a certain (0.0 to 0.5). Therefore, 0.5 'sugarpercent' may mark some sugar threshold value that some of the most favorite candies exceed.
+
+
+```{r fig.align='center', fig.cap="Figure - Top left and bottom right: histograms of 'sugarpercent' and 'winpercent', paged.print=TRUE, respectively. Bottom left: scatter plot between 'sugarpercent' and 'winpercent' (including loess curve). Top right: Pearson´s r", size=5}
+
+#scatter plot matrix
+numeric_variables <- c("sugarpercent", "winpercent")
+pairs.panels(candy_cleaned[, numeric_variables], density = F, ellipses = F, rug = F, hist.col = "steelblue") 
+
+```
+
+## Multicollinearity among predictor variables? 
+Below I created a matrix of correlation coefficients among the available attributes (note that I transformed all logical into dummy variables). Here, highest correlation can be found between chocolate and fruity (r = -0.78), i.e., 'chocolate' is rarely combined with 'fruity' in a candy. We bear that information in mind when applying a multiple regression mode for predicting candy´s win rate.
+
+```{r fig.align='center', fig.cap="Figure - Correlations matrix of predictor variables. Non-colored boxes indicate insignificant correlations (p < 0.05)", size=5}
+candy_cleaned_dummy <- candy_cleaned
+candy_cleaned_dummy[,c(2:10)] <- lapply(candy_cleaned_dummy[,c(2:10)], as.double)
+candy_r <- rcorr(as.matrix(candy_cleaned_dummy[2:11]))
+
+
+
+```
+
+
+# model selection
+## Multiple regression
+### Raw model (using all characteristics as predictors)
+I applied a multiple regression model to evaluate whether candy characteristics can be used to predict the win rates of the online survey (using the cleaned data set). The residuals (or errors) suggest that 50% of the candy 'winrate' prediction were off by lower than ~6 %. Maximum errors were on the order of ~20%. Among all predictors, chocolate and fruity seem to have the highest positive impact on win rate (on average, 20 und  11 %, respectively). Even though we already gained some insights about the most influential characteristics, the model´s overall performance is rather poor to moderate since only about half of the win rate´s variability can be explained by the involved candy characteristics (adjusted R² of 0.47).
+
+```{r}
+# multiple regression model (including all predictors)
+mr1.lm <-  lm(winpercent ~ ., data = candy_cleaned[-1]) 
+summary(mr1.lm) 
+```
+### Improving model performance
+
+Based on the statistical output of the raw model, one might suggest that adding chocolate **and** fruity may result in a particularly favorable candy. However, both these attributes correlate with each other (as discussed before) and, therefore, induce multicollinearity into the model. Intuitively,'chocolate' and 'fruity' seems a rather odd combination. Consequently, I looked up candies combining 'fruity' with 'chocolate' but also with other taste-like characteristics like 'caramel', 'peanut_almond', 'nougat' and 'rice_wafer_cooky'.
+
+```{r}
+#expanding code area width
+options(width = 200) 
+
+#finding combinations of 'fruity' with other attributes
+candy_cleaned %>% filter(fruity == TRUE & (chocolate == TRUE | 
+                                           caramel == TRUE | 
+                                           peanut_almond == TRUE | 
+                                           nougat == TRUE | 
+                                           rice_wafer_cooky == TRUE)) %>% 
+                  select(c(candy:rice_wafer_cooky, winpercent))
+```
+
+
+# Assumption validation
+Filtering the candies accordingly results in only two candies ('Caramel Apple Pops' and 'Tootsie Pop'; see output above) fulfilling these criteria. Both candies have rather low win rates (35 and 49%). Combining 'fruity' with other taste-like characteristics seems therefore not only uncommon (probably for a reason) but, if combined anyway, results in rather unsuccessful candies. With respect to our initial goal (finding favorable candy attributes), I suggest to remove both odd candies from the data set. Removing these candies further avoids the observed multicollinearity between 'chocolate' and 'fruity' and also cleanly splits up the data set in two subgroups (either exclusively fruity or exclusively non-fruity).
+
+```{r}
+#finding indices of odd candies
+CAP <- which(candy_cleaned$candy == "Caramel Apple Pops")
+TP  <- which(candy_cleaned$candy == "Tootsie Pop")
+
+#removing odd candies
+candy_simplified <- candy_cleaned[-c(CAP, TP), ]
+
+#checking frequency of nonfruity and fruity candies
+candy_simplified %>% group_by(fruity) %>% 
+                     count()
+```
+
+Now, the fruity attribute splits up the data set yielding 45 non-fruity and 36 fruity candies. Based on these distinctively different groups (which mutually exclude each other) I evaluated first which group may be the best candidate for the new candy product. The boxplots below show the distribution of candy win rate for each group suggesting that non-fruity candies should be favored over fruity candies.
+
+```{r, fig.align='center', fig.caption="Boxplot of 'winrate' between non-fruity and fruity candies using the candy_simplified data set"}
+candy_simplified %>% ggplot(aes(fruity, winpercent)) + 
+                     geom_boxplot() + 
+                     geom_jitter(width = 0.05, height = 0, alpha= 0.5) +
+                     labs(x ="Fruity", 
+                          y = "Win rate [%]", 
+                          title = "Win rates of non-fruity vs. fruity candies",
+                          subtitle = ("(odd candies not included)"))
+
+```
+
+Applying a t test between group means statistically backs up our findings (see below). Consequently, a non-fruity candy seems to be a reasonable choice when inventing successful new candy product (on average, a 12% higher win rate; p < 0.05)
+
+```{r}
+# statistical verification of differences in 'winpercent' between nonfruity and fruity candies
+# F test for equal variances
+ftest <- var.test(winpercent ~ fruity, data = candy_simplified) 
+# t.test between mean 'winrate' of nonfruity and fruity
+t.test(winpercent ~ fruity, data = candy_simplified, 
+                            alternative = "greater", 
+                            var.equal = (ifelse(ftest$p.value < 0.05, TRUE, FALSE))) 
+```
+
+I focused therefore only on the 47 exclusively non-fruity candies and applied, again, the multiple regression (see below). Overall, an improved model performance can be noted (adjusted R² increased from 0.47 to 0.52).
+
+```{r}
+#reducing data set to solely non-fruity candies
+candy_nonfruity <- candy_simplified %>% filter(fruity == FALSE) %>% select(-fruity)
+
+# multiple regression model using only nonfruity candy
+nonfruity.lm <-  lm(winpercent ~ ., data = candy_nonfruity[ ,-1])
+summary(nonfruity.lm)
+```
+
+When assessing in detail the influence of the individual characteristics on win rate, we notice that 'caramel', 'nougat', 'hard' barely have any impact (win rate increases by 3, 2 and 1 %, respectively). Moreover, these predictors are highly insignificant (p > 0.44). It seems therefore justified to exclude these predictors in favor of the model´s simplicity. 
+
+Furthermore, as noted earlier, 'sugarpercent' seems to have a rather non-linear influence on 'winrate'. Hence, we transform the numeric 'sugarpercent' into a logical characteristic (using the threshold value 0.5). 
+
+When applying the multiple regression model on the this modified data set (removing 'caramel', 'nougat', 'hard' and transforming 'sugar') our model further improves the adjusted R² from 0.52 to 0.57.
+
+```{r}
+#removing highly insignificant predictors and transforming 'sugarpercent' from numeric to binary
+candy_nonfruity2 <- candy_nonfruity %>% select(-caramel, -nougat, -hard) %>%       
+                    mutate(sugar = ifelse(sugarpercent > 0.5, TRUE, FALSE)) %>% 
+                    select(-sugarpercent)
+
+# multiple regression model using modified data set
+nonfruity2.lm <- lm(winpercent ~ ., data = candy_nonfruity2[ ,-1])
+summary(nonfruity2.lm)
+
+```
+
+
+# Results and Conclusion of multiple regression model 
+The final multiple regression model suggest approximately the following influences on candy win rate. The characteristics are further sorted by their p-value (starting with the lowest; bold ones are < 0.05): <br>
+
+<center> 
+Win rate [%] = 22 x **chocolate** + 7 x **sugar** + 8 x **peanut_almond** - 9 x multipiece + 8 x rice_wafer_cooky - 6 x bar + 38 
+</center> <br>
+
+Interestingly, considering the full data set, no candy fulfills these 6 criteria (see logical expression filtering below). This observation may either point to a candy market niche but may also be misleading. Some of the involved predictors are still rather weakly statistically significant ('rice_wafer_cooky', 'bar' and 'multipiece')). Even though this idea might be worth following, the current data seems insufficient to adequately address this question.
+
+```{r}
+#expanding code area width
+options(width = 200) 
+
+#finding combinations of 'fruity' with other attributes
+candy_cleaned %>% filter(chocolate == TRUE,
+                            sugarpercent > 0.5,
+                            peanut_almond == TRUE,
+                            multipiece == FALSE,
+                            rice_wafer_cooky == TRUE,
+                            bar == FALSE,
+                            ) %>% 
+                  select(candy)
+```
+
+# Decision tree
+Besides the multiple regression, I also applied a tree-based model (decision tree) to find characteristics of a favorable candy (see figures below). For this, I used the simplified candy data set (excluding the odd candies 'Apple Caramel Pops' and 'Tootsie Pop'). To avoid overfitting of an initially grown decision tree, a suitable complexity parameter (CP) has been chosen. Here, a tree size of 2 seems suitable as this size meets both a low cross validation error and a low model complexity (middle figure). The resulting post-pruned decision tree with the size of 2 is shown below (right figure).
+
+```{r}
+# applying decision tree model using the candy_simplified data set
+candy_rpart <- rpart(winpercent~., data = candy_cleaned[, -1])
+
+# Checking complexity parameter with lowest cross validation error
+printcp(candy_rpart)
+
+```
+
+```{r, fig.align="center", fig.caption="Left: decision tree model (unpruned). Middle: cross-validation error vs. tree size. Right: Pruned decision tree based on complexity parameter for tree size 2", size = 5}
+
+par(mfrow=c(1,3))
+
+#plot raw tree
+rpart.plot(candy_rpart, digits = 3, fallen.leaves = T, type = 5, roundint = F)
+
+#visualize cross-validation results
+plotcp(candy_rpart)
+# pruning of inital tree
+pruned_candy_rpart <- prune(candy_rpart, cp = 0.057241)
+# plotting pruned tree
+rpart.plot(pruned_candy_rpart, digits = 3, fallen.leaves = T, type = 5, roundint = F)
+
+```  
+
+The pruning results in a decision tree with only three leaf nodes. Nonetheless, similar as found for our multiple regression model approach, the decision tree defines 'chocolate' and 'peanut_almond' as most relevant candy characteristics whereby also declaring 'fruity' as not relevant.
+
+Below, I listed the candies ending up in the far right leaf node (highest predicted win rate). Even though the listed candies show all a win rate of > 50 % (indicating exclusively candies that are, on average, preferred over others), the overall range of win rates is rather high (about 50 to 84 %). Therefore, the model correctly finds attributes for *favorable* but not necessarily for the *most favorable* candies.
+
+```{r}
+#expanding code area width
+options(width = 200) 
+
+#finding combinations of 'fruity' with other attributes
+candy_cleaned %>% filter(chocolate == TRUE,
+                         peanut_almond == TRUE) %>% 
+                  arrange(desc(winpercent)) %>%
+                  select(candy, winpercent)
+```
+
+
+# Model comparison and business recommendation
+
+To further assess both models, I plotted the predicted win rates (using the optimized model 'nonfruity2.lm') versus the actual win rates below (left scatter plot). An equivalent plot has been done using the decision tree model (right scatter plot). Overall, the multiple regression model shows a lower MAE compared to the decision tree and is also capable of predicting a much larger range of win rates.
+
+```{r}
+#### Win rate prediction using multiple regression ####
+predicted_winpercent_mr <- predict(nonfruity2.lm, candy_nonfruity2)
+
+# Estimating mean absolute error (MAE) as performance metrics
+absolut_differences <- abs(candy_nonfruity2$winpercent - predicted_winpercent_mr)
+MAE_mr <- sum(absolut_differences) / length(predicted_winpercent_mr)
+
+#### Win rate prediction using decision tree #### 
+predicted_winpercent_dt <- predict(pruned_candy_rpart, candy_cleaned[, 2:11])
+
+# Estimating mean absolute error (MAE) as performance metrics
+absolut_differences_dt <- abs(candy_cleaned$winpercent - predicted_winpercent_dt)
+MAE_dt <- sum(absolut_differences_dt) / length(predicted_winpercent_dt)
+
+```
+
+
+
+```{r, fig.align="center", fig.caption="Predicted vs. actual win rates of candies when using the multiple regresson model (left figure) and the decision tree model (right figure)"}
+
+# label creation for plot
+labels_mr <- data.frame(x = 40, 
+                        y = 80, 
+                        text = paste0("MAE = ", signif(MAE_mr, 3)))
+
+labels_dt <- data.frame(x = 40, 
+                        y = 80, 
+                        text = paste0("MAE = ", signif(MAE_dt, 3)))
+
+# Plot of predicted vs. actual winrate (multiple regression)
+plot_mr <- candy_nonfruity2 %>% mutate(predicted_winprecent_mr = predicted_winpercent_mr) %>%
+                                ggplot(aes(predicted_winpercent_mr, winpercent)) + 
+                                       geom_point() + 
+                                       geom_smooth(method = "lm") + 
+                                       labs(title = "Multiple regression model", 
+                                            x = "Predicted win rate [%]",
+                                            y = "Actual win rate [%]" ) +
+                                       xlim(c(20,80)) +
+                                       geom_text(data = labels_mr, 
+                                                 aes(x,y, label = text), 
+                                                 inherit.aes = F)
+
+# Plot of predicted vs. actual win rate (decision tree) 
+plot_dt <- candy_cleaned %>%  mutate(predicted_winprecent_dt = predicted_winpercent_dt) %>%
+                              ggplot(aes(predicted_winpercent_dt, winpercent)) + 
+                                geom_point() + 
+                                geom_smooth(method = "lm") +
+                                labs(title = "Decision tree model", 
+                                     x = "Predicted win rate [%]",
+                                     y = "Actual win rate [%]" ) +
+                                xlim(c(20,80)) +
+                                geom_text(data = labels_dt, 
+                                          aes(x,y, label = text), 
+                                          inherit.aes = F)
+
+
+# preparing a multiple figure plot
+grid.arrange(plot_mr, plot_dt, nrow = 1)
+
+```
+
+# Business Recommendation
+
+A business recommendation can be translated from the multiple regression model: a successful candy should be **not fruity** and further have the following characteristics (ordered by importance with key characteristics in bold):
+
+<center> 
+Characteristics            | Consider for new candy product? 
+-------------              | ------------- 
+**chocolate**              | **definitely**        
+**sugar (>0.5 percentile)**| **yes**
+**peanuts or almonds**     | **yes**  
+multi-piece                | optional (rather not)
+rice/wafer/cooky component | optional (rather yes)
+bar form                   | optional (rather not)
+</center> 
+
+All remaining characteristics ('nougat', 'caramel', 'hard') are not relevant. Following the outlined recommendations should result in a candy that his, on average, mostly preferred over other ones (83 out of 100 times). 
